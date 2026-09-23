@@ -385,6 +385,139 @@ body.dragging-file .bg-thumb-custom {
 }
 
 /* ============================================================
+   GARAGE  (car chooser)
+   ============================================================ */
+/* Every other page is locked to the viewport; this one scrolls. */
+.garage-html,
+.garage-html body { height: auto; min-height: 100%; overflow: visible; }
+
+.garage-main { position: relative; z-index: 1; padding-bottom: 7rem !important; }
+
+.garage-title {
+  font-size: clamp(1.8rem, 4vw, 2.8rem);
+  letter-spacing: 0.02em;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+}
+.garage-sub {
+  font-size: clamp(0.9rem, 1.4vw, 1.05rem);
+  font-weight: 300;
+  opacity: 0.92;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+}
+
+.car-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 1.1rem;
+}
+
+.car-card { display: flex; flex-direction: column; }
+
+.car-pick {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  text-align: left;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.car-pick:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.2);
+}
+.car-pick:active { transform: translateY(-1px); }
+
+/* Thumbnail: silhouette by default, a photo at images/cars/<id>.jpg if there is one */
+.car-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.3));
+}
+.car-art {
+  width: 78%;
+  height: auto;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.18));
+}
+.car-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.car-card.has-photo .car-art { display: none; }
+
+.car-flag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.82);
+  color: #fff;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+
+.car-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.7rem 0.9rem 0.85rem;
+}
+.car-name { font-size: 0.98rem; font-weight: 600; color: #1a1a1a; }
+.car-meta { font-size: 0.78rem; color: #666; }
+
+/* A car whose .glb isn't in the repo yet */
+.car-card.missing .car-pick { opacity: 0.55; }
+.car-card.missing .car-pick:hover { opacity: 0.8; transform: none; }
+
+.car-hint {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.car-hint code {
+  color: #ffdf7e;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+.car-hint a { color: #fff; }
+
+/* Car name under the loading spinner */
+.loading-car {
+  font-size: 0.85rem;
+  color: #666;
+  letter-spacing: 0.02em;
+}
+
+/* Shown in place of the loading card when the .glb can't be fetched */
+.load-error { max-width: 22rem; }
+.load-error-title { font-weight: 600; color: #a02020; }
+.load-error-hint { font-size: 0.85rem; color: #555; }
+.load-error-file {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 0.78rem;
+  color: #333;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================
    MOBILE  (phones / small tablets)
    The background picker lives top-center on desktop, which collides
    with the color tools (top-left) on narrow screens. Move it to the

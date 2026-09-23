@@ -1,7 +1,7 @@
-import { initLangSwitch } from './i18n.js';
+import * as i18n from './i18n.js';
 
-initLangSwitch();
+i18n.initLangSwitch();
 
 document.getElementById('startBtn').addEventListener('click', () => {
-  window.location.href = 'configurator.html';
+  window.location.href = 'garage.html';
 });

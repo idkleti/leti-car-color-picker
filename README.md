@@ -1,30 +1,16 @@
-# Fiat Picker
+# Leti's Car Color Picker
 
-Fiat Picker is a 3D web configurator that lets you customize the colors of a Fiat 500 Abarth directly in your browser. It’s designed to be a simple, lightweight tool to visualize the car with different paint jobs and in various environments.
-
-### What it does
-The app provides an interactive 3D model that you can rotate and zoom. Key features include:
-* **Color Customization:** You can choose a single color for the whole car or switch to "Two colors" mode to paint the roof and body separately.
-* **Environment Swapping:** Change the background to see how the car's reflections and lighting change in different settings (city, mountains, seaside, etc.).
-* **Your Own Backdrop:** Import a photo of your own and frame it: a movable, zoomable window with the same aspect ratio as the browser window decides which part of the photo stays visible behind the car.
-* **Snap a Photo:** There is a dedicated button to take a high-quality screenshot of your configuration and save it to your device.
-* **Language Support:** The interface is available in both English and Italian.
-
-### How it works
-The project is built using standard web technologies (HTML, CSS, and JavaScript). The 3D engine is powered by **Three.js**, which handles the scene rendering, lighting, and the GLTF model loading.
-
-The code is organized into a few main parts:
-* `configurator.js` contains the logic for the 3D scene, material updates, and the screenshot system.
-* `i18n.js` manages the text translations.
-* `style.css` handles the UI layout, ensuring it works well on both desktop and mobile screens.
-
-To get realistic reflections on the car's paint, I used a PMREM (Prefiltered Mipmapped Radiance Environment Map) generator that simulates real-world lighting based on the environment.
+Leti's Car Color Picker is a 3D web configurator that lets you repaint a car directly in your browser. Pick a car from the garage, then play with its colors and its surroundings.
 
 ### Credits and Assets
 This project uses the following resources:
 
-**3D Model:**
-* [2014 Abarth 500 1.4 16V](https://sketchfab.com/3d-models/2014-abarth-500-14-16v-a7fe3d6fa0a44c83a62f21853256d166) by [beastf9](https://sketchfab.com/ddiaz-design) (licensed under CC BY 4.0).
+**3D Models:**
+* [2014 Abarth 500 1.4 16v](https://sketchfab.com/3d-models/2014-abarth-500-14-16v-a7fe3d6fa0a44c83a62f21853256d166) by Ddiaz Design (@ddiaz-design) — CC BY-NC-SA 4.0.
+* [1993 BMW M3 Coupe (E36)](https://sketchfab.com/3d-models/1993-bmw-m3-coupe-e36-76401039fa80419ab036bea09acb898d) by Ddiaz Design (@ddiaz-design) — CC BY-NC-SA 4.0.
+* [Subaru Impreza 22B STI 1998](https://sketchfab.com/3d-models/subaru-impreza-22b-sti-1998-wwwvecarzcom-20512df95cdf4114aa50b6005b5290a3) by vecarz (@heynic) — CC BY-NC-SA 4.0.
+* [2001 Toyota Yaris](https://sketchfab.com/3d-models/2001-toyota-yaris-443fd49eb0844557a06854cae0b61267) by Dave Love (@Tyler_Dave) — CC BY 4.0.
+* [2021 RAM 1500 TRX](https://sketchfab.com/3d-models/2021-ram-1500-trx-4fad9badee2449b9a5addadc11c3f4e1) by Outlaw Games (@Outlaw_Games) — CC BY-NC 4.0.
 
 **Background Photos:**
 * [Road with green trees](https://www.pexels.com/it-it/foto/strada-alberi-verde-scenario-17163549/) by Ash Haghighi.

@@ -5,8 +5,16 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // Namespace import on purpose: a named import of something a stale cached
 // i18n.js doesn't export yet fails module linking and blanks the whole page.
 import * as i18n from './i18n.js';
+import { getCar, currentCarId, rememberCar } from './cars.js';
 
 i18n.initLangSwitch();
+
+// The car this page is configuring. Everything model-specific comes from here,
+// so the rest of the file stays the same whichever car is loaded.
+const carSpec = getCar(currentCarId());
+rememberCar(carSpec.id);
+
+const tr = (key) => (i18n.t ? i18n.t(key) : key);
 
 
 // Scene, renderer, camera
@@ -44,6 +52,58 @@ controls.minPolarAngle = 0.15;
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
 controls.enablePan = false;
 controls.update();
+
+/*
+  Framing. The viewing angle is fixed, the distance comes from the size of the
+  car that actually loaded, so a 3.6 m hatchback and a 5.9 m pickup are both
+  shown whole and at the same apparent size.
+*/
+const VIEW_DIR = new THREE.Vector3(5.5, 2.6, 6.0).normalize();
+const GROUND_FIT_DIST = 8.34;   // camera distance the ground disc was sized for
+let fitRadius = 0;
+const fitTarget = new THREE.Vector3(0, 0.8, 0);
+let userMovedCamera = false;
+
+function applyFraming() {
+  if (!fitRadius) return;
+  const vFov = THREE.MathUtils.degToRad(camera.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  // The tighter of the two fields decides the distance, so nothing is cut off
+  // on a narrow window.
+  const dist = (fitRadius * 1.25) / Math.sin(Math.min(vFov, hFov) / 2);
+  controls.target.copy(fitTarget);
+  camera.position.copy(fitTarget).addScaledVector(VIEW_DIR, dist);
+  controls.minDistance = dist * 0.45;
+  controls.maxDistance = dist * 2.4;
+  controls.update();
+
+  // The asphalt disc is modelled at radius 8, which is what the first car was
+  // framed against. Holding that ratio keeps the ground the same apparent size
+  // instead of shrinking to an island when the camera pulls back for a pickup
+  // or a portrait phone. The texture repeat follows so the grain stays put.
+  const groundScale = dist / GROUND_FIT_DIST;
+  floor.scale.setScalar(groundScale);
+  shadowCatcher.scale.setScalar(groundScale);
+  if (floor.material.map) floor.material.map.repeat.set(18 * groundScale, 18 * groundScale);
+}
+
+function frameCar(bbox) {
+  const size = bbox.getSize(new THREE.Vector3());
+  bbox.getCenter(fitTarget);
+  fitRadius = size.length() / 2;
+  applyFraming();
+
+  // Keep the shadow map wrapped around the car instead of a fixed box: a tight
+  // frustum is what keeps the contact shadow sharp on a small car.
+  const span = Math.max(size.x, size.z) * 0.9;
+  const shadowCam = keyLight.shadow.camera;
+  shadowCam.left = -span;
+  shadowCam.right = span;
+  shadowCam.top = span;
+  shadowCam.bottom = -span;
+  shadowCam.far = span * 8;
+  shadowCam.updateProjectionMatrix();
+}
 
 
 // Lights and floor
@@ -155,13 +215,13 @@ const bodyMaterials = new Set();
 const roofMaterials = new Set();
 let modelLoaded = false;
 
-const GLB_PATH = 'models/2014_abarth_500_1.4_16v.glb';
-
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingProgress = document.getElementById('loadingProgress');
+const loadingCar = document.getElementById('loadingCar');
+if (loadingCar) loadingCar.textContent = carSpec.name;
 
 new GLTFLoader().load(
-  GLB_PATH,
+  carSpec.file,
   onModelLoaded,
   (xhr) => {
     if (xhr.lengthComputable && loadingProgress) {
@@ -174,9 +234,18 @@ new GLTFLoader().load(
   },
   (err) => {
     console.error('GLB load error:', err);
-    if (loadingOverlay) {
-      loadingOverlay.innerHTML = '<div style="text-align:center; color:#a00;"><b>Errore caricamento modello</b><br><small>Vedi console</small></div>';
-    }
+    if (!loadingOverlay) return;
+    // Four of the five cars ship without their .glb, so name the file that is
+    // missing rather than sending people to the console.
+    loadingOverlay.innerHTML = `
+      <div class="load-error text-center px-4">
+        <p class="load-error-title mb-1">${tr('loadError')}</p>
+        <p class="load-error-hint mb-2">${tr('loadErrorHint')}</p>
+        <code class="load-error-file">${carSpec.file}</code>
+        <div class="mt-3">
+          <a class="btn btn-dark btn-sm rounded-pill px-3" href="garage.html">${tr('changeCar')}</a>
+        </div>
+      </div>`;
   }
 );
 
@@ -362,6 +431,234 @@ function splitMeshBicolor(mesh, beltCenter, beltSlope, lidFloorY, normalUpThresh
   };
 }
 
+// Is this pixel inside a hue band? Shared by the texture retint and by the
+// triangle claim below, so both read a colour the same way.
+function inHueBand(r, g, b, band) {
+  const max = Math.max(r, g, b);
+  if (!max) return false;
+  const c = max - Math.min(r, g, b);
+  if (c / max < (band.minSaturation ?? 0.45)) return false;
+  if (max / 255 < (band.minValue ?? 0)) return false;
+  let h = 0;
+  if (c) {
+    if (max === r) h = ((g - b) / c) % 6;
+    else if (max === g) h = (b - r) / c + 2;
+    else h = (r - g) / c + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  // circular distance, so a band straddling 0 degrees still works
+  let delta = Math.abs(h - band.hue) % 360;
+  if (delta > 180) delta = 360 - delta;
+  return delta <= (band.spread ?? 20);
+}
+
+/*
+  Model textures sometimes need a touch-up before the picker can use them.
+
+  A car's showroom colour is often painted straight into the base colour
+  texture, which then multiplies whatever colour is picked: a blue atlas turns a
+  red pick into navy. And because that same atlas usually carries the lights and
+  badges too, it can't simply be thrown away.
+
+  Each rule claims the pixels inside a hue band and either strips their tint
+  ("neutral", keeping the shading so the picked colour reads true) or repaints
+  them in a fixed colour. Everything else is left exactly as it was.
+*/
+function retintedTexture(src, rules) {
+  const img = src && src.image;
+  if (!img || !img.width || !img.height) return null;
+
+  const cvs = document.createElement('canvas');
+  cvs.width = img.width;
+  cvs.height = img.height;
+  const ctx = cvs.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const pixels = ctx.getImageData(0, 0, cvs.width, cvs.height);
+  const d = pixels.data;
+
+  const bands = rules.map((rule) => ({
+    test: rule,
+    // Parsed by hand rather than through THREE.Color: these bytes go straight
+    // into an sRGB texture, with none of the working-space conversion a
+    // material colour needs.
+    target: rule.to === 'neutral' ? null : [
+      parseInt(rule.to.slice(1, 3), 16),
+      parseInt(rule.to.slice(3, 5), 16),
+      parseInt(rule.to.slice(5, 7), 16),
+    ],
+    hist: new Uint32Array(256),
+    count: 0,
+    peak: 255,
+  }));
+
+  // Which band claims a pixel, if any. First one wins.
+  function bandOf(r, g, b) {
+    for (let i = 0; i < bands.length; i++) {
+      if (inHueBand(r, g, b, bands[i].test)) return i;
+    }
+    return -1;
+  }
+
+  // Pass 1: how bright each band sits, taken as its 90th percentile. Mapping
+  // that to full strength keeps panel lines and creases proportionally darker.
+  for (let i = 0; i < d.length; i += 4) {
+    const k = bandOf(d[i], d[i + 1], d[i + 2]);
+    if (k < 0) continue;
+    bands[k].hist[Math.max(d[i], d[i + 1], d[i + 2])]++;
+    bands[k].count++;
+  }
+  let matched = false;
+  for (const band of bands) {
+    if (!band.count) continue;
+    matched = true;
+    let seen = 0;
+    for (let v = 0; v < 256; v++) {
+      seen += band.hist[v];
+      if (seen >= band.count * 0.9) { band.peak = Math.max(1, v); break; }
+    }
+  }
+  if (!matched) return null;
+
+  // Pass 2: rewrite them.
+  for (let i = 0; i < d.length; i += 4) {
+    const k = bandOf(d[i], d[i + 1], d[i + 2]);
+    if (k < 0) continue;
+    const band = bands[k];
+    const level = Math.min(1, Math.max(d[i], d[i + 1], d[i + 2]) / band.peak);
+    if (band.target) {
+      d[i]     = Math.round(band.target[0] * level);
+      d[i + 1] = Math.round(band.target[1] * level);
+      d[i + 2] = Math.round(band.target[2] * level);
+    } else {
+      d[i] = d[i + 1] = d[i + 2] = Math.round(level * 255);
+    }
+  }
+  ctx.putImageData(pixels, 0, 0);
+
+  // The clone keeps the glTF's own wrapping, flipY and colour space; the canvas
+  // goes in as a fresh Source so the original texture is left alone.
+  const tex = src.clone();
+  tex.source = new THREE.Source(cvs);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Parts that are never body paint, however the model names them.
+const NOT_PAINT = /glass|window|windscreen|windshield|tyre|tire|rubber|wheel|rim|tread|chrome|mirror|light|lamp|led|glow|interior|seat|dash|leather|carpet|grill|badge|logo|plate|brake|caliper|disc|exhaust|shadow|decal|dirt|sticker|screw|bolt/i;
+
+/*
+  Rank materials by how much surface they cover, biggest first. A car's paint is
+  almost always the largest opaque patch once glass, rubber and trim are out of
+  the way, which gives us a usable guess for models whose materials aren't named
+  anything we recognise. Areas are in local units: only the ranking matters.
+*/
+function rankPaintCandidates(root) {
+  const area = new Map();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3();
+
+  root.traverse((obj) => {
+    const pos = obj.isMesh && obj.geometry && obj.geometry.attributes.position;
+    if (!pos) return;
+    const index = obj.geometry.index;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const groups = obj.geometry.groups && obj.geometry.groups.length
+      ? obj.geometry.groups
+      : [{ start: 0, count: index ? index.count : pos.count, materialIndex: 0 }];
+
+    for (const g of groups) {
+      const mat = mats[g.materialIndex] || mats[0];
+      if (!mat || !mat.color) continue;
+      if (mat.transparent && mat.opacity < 0.9) continue;
+      if (NOT_PAINT.test(mat.name || '')) continue;
+
+      let sum = 0;
+      const end = g.start + g.count;
+      for (let i = g.start; i < end; i += 3) {
+        const i0 = index ? index.getX(i)     : i;
+        const i1 = index ? index.getX(i + 1) : i + 1;
+        const i2 = index ? index.getX(i + 2) : i + 2;
+        a.fromBufferAttribute(pos, i0);
+        b.fromBufferAttribute(pos, i1);
+        c.fromBufferAttribute(pos, i2);
+        sum += ab.subVectors(b, a).cross(ac.subVectors(c, a)).length() * 0.5;
+      }
+      area.set(mat, (area.get(mat) || 0) + sum);
+    }
+  });
+
+  return [...area.entries()]
+    .map(([material, value]) => ({ material, area: value }))
+    .sort((x, y) => y.area - x.area);
+}
+
+/*
+  Read a texture's pixels once so triangles can be tested against it. glTF puts
+  UV (0,0) at the top left, same as a canvas, so v needs no flipping.
+*/
+function textureProbe(tex) {
+  const img = tex && tex.image;
+  if (!img || !img.width || !img.height) return null;
+  const cvs = document.createElement('canvas');
+  cvs.width = img.width;
+  cvs.height = img.height;
+  const ctx = cvs.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const { data } = ctx.getImageData(0, 0, cvs.width, cvs.height);
+  return (u, v, band) => {
+    // floor, not round: a texel covers [i/w, (i+1)/w), so rounding lands half a
+    // texel over and picks the neighbour at any boundary.
+    const x = Math.min(cvs.width - 1, Math.max(0, Math.floor((u - Math.floor(u)) * cvs.width)));
+    const y = Math.min(cvs.height - 1, Math.max(0, Math.floor((v - Math.floor(v)) * cvs.height)));
+    const o = (y * cvs.width + x) * 4;
+    return inHueBand(data[o], data[o + 1], data[o + 2], band);
+  };
+}
+
+/*
+  Split a mesh by what its triangles sample from the base colour texture: the
+  ones landing inside the hue band get a material of their own, so they can take
+  a colour the rest of the mesh doesn't.
+
+  The Impreza needs this. Its rear seats aren't a material of their own, they
+  sit in a catch-all material that also carries trim all over the car; the blue
+  they are painted is what tells them apart, where a bounding box could only cut
+  blindly through the shell.
+*/
+function splitMeshByHue(mesh, band) {
+  const geom = mesh.geometry;
+  const uv = geom.attributes.uv;
+  const probe = textureProbe(mesh.material.map);
+  if (!uv || !probe) return null;
+
+  const index = geom.index;
+  const triCount = index ? index.count / 3 : geom.attributes.position.count / 3;
+  const claimed = [];
+  const rest = [];
+
+  for (let t = 0; t < triCount; t++) {
+    const i0 = index ? index.getX(t * 3)     : t * 3;
+    const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+    const u = (uv.getX(i0) + uv.getX(i1) + uv.getX(i2)) / 3;
+    const v = (uv.getY(i0) + uv.getY(i1) + uv.getY(i2)) / 3;
+    (probe(u, v, band) ? claimed : rest).push(i0, i1, i2);
+  }
+  if (!claimed.length || !rest.length) return null;
+
+  const merged = new Uint32Array(rest.length + claimed.length);
+  merged.set(rest, 0);
+  merged.set(claimed, rest.length);
+  geom.setIndex(new THREE.BufferAttribute(merged, 1));
+  geom.clearGroups();
+  geom.addGroup(0, rest.length, 0);
+  geom.addGroup(rest.length, claimed.length, 1);
+
+  const claimedMat = mesh.material.clone();
+  mesh.material = [mesh.material, claimedMat];
+  return claimedMat;
+}
+
 function onModelLoaded(gltf) {
   const root = gltf.scene;
 
@@ -378,9 +675,9 @@ function onModelLoaded(gltf) {
   bbox = new THREE.Box3().setFromObject(root);
   bsize = bbox.getSize(new THREE.Vector3());
 
-  // 2. Scale so the car length is 4 units.
-  const TARGET_LEN = 4.0;
-  const scale = TARGET_LEN / bsize.x;
+  // 2. Scale to the car's real length in metres, so the cars keep their size
+  //    relative to each other.
+  const scale = carSpec.length / bsize.x;
   root.scale.setScalar(scale);
 
   // 3. Re-measure and center: X and Z centered, Y resting on the ground.
@@ -390,6 +687,13 @@ function onModelLoaded(gltf) {
   root.position.x = -bcenter.x;
   root.position.z = -bcenter.z;
   root.position.y = -bbox.min.y;
+
+  // Re-measure where the car now actually is. The belt plane below and the
+  // camera framing both work in world space, and until this point bbox still
+  // described the model before it was moved onto the ground: fine for a model
+  // already authored at the origin, off by its own offset for any other.
+  root.updateMatrixWorld(true);
+  bbox = new THREE.Box3().setFromObject(root);
 
   // 4. Enable shadows and collect every unique material.
   const allMaterials = new Set();
@@ -401,25 +705,70 @@ function onModelLoaded(gltf) {
     for (const m of mats) if (m) allMaterials.add(m);
   });
 
-  // 5. Classify materials by name.
+  // 4b. Exporters sometimes write a specular tint far outside its sane range.
+  //     It tints the reflection and belongs in 0..1, so a red component of 24
+  //     turns a chrome badge pink and one of 4 turns a windscreen maroon.
+  //     Anything over 1 is export damage: put it back to a white specular.
+  let wildSpecular = 0;
   for (const m of allMaterials) {
-    const n = (m.name || '').toLowerCase();
-    if (/body|paint|carrosserie|carrozzeria|shell|exterior/.test(n)) {
-      bodyMaterials.add(m);
-    }
-    if (/roof|tetto|toit/.test(n)) {
-      roofMaterials.add(m);
+    const spec = m.specularColor;
+    if (!spec || (spec.r <= 1 && spec.g <= 1 && spec.b <= 1)) continue;
+    spec.setRGB(1, 1, 1);
+    m.needsUpdate = true;
+    wildSpecular++;
+  }
+  if (wildSpecular) {
+    console.info(`[${carSpec.id}] reset ${wildSpecular} out-of-range specular tint(s)`);
+  }
+
+  // 4c. Per-car touch-ups for materials that lost their textures on export and
+  //     would otherwise render as flat grey.
+  for (const fix of carSpec.materialFixes || []) {
+    for (const m of allMaterials) {
+      if (!fix.match.test(m.name || '')) continue;
+      if (fix.color !== undefined && m.color) m.color.set(fix.color);
+      if (fix.roughness !== undefined) m.roughness = fix.roughness;
+      if (fix.metalness !== undefined) m.metalness = fix.metalness;
+      if (fix.transparent !== undefined) m.transparent = fix.transparent;
+      if (fix.opacity !== undefined) m.opacity = fix.opacity;
+      m.needsUpdate = true;
     }
   }
 
-  // 6. Bicolor split parameters:
+  // 5. Classify materials by name, letting a car override the patterns.
+  const bodyPattern = carSpec.bodyPattern || /body|paint|carrosserie|carrozzeria|shell|exterior/;
+  const roofPattern = carSpec.roofPattern || /roof|tetto|toit/;
+  for (const m of allMaterials) {
+    const n = (m.name || '').toLowerCase();
+    if (bodyPattern.test(n)) bodyMaterials.add(m);
+    if (roofPattern.test(n)) roofMaterials.add(m);
+  }
+
+  if (new URLSearchParams(location.search).has('debug')) {
+    console.log(`[${carSpec.id}] materials:`, [...allMaterials].map((m) => m.name || '(unnamed)'));
+  }
+
+  // 5b. Nothing matched: guess the paint from the surface areas and say so, so
+  //     the car can be given a bodyPattern in cars.js.
+  if (bodyMaterials.size === 0) {
+    const ranked = rankPaintCandidates(root);
+    if (ranked.length) bodyMaterials.add(ranked[0].material);
+    console.warn(
+      `[${carSpec.id}] no material matched the body pattern, painting ` +
+      `"${ranked[0] ? ranked[0].material.name || '(unnamed)' : 'nothing'}". ` +
+      'Set bodyPattern in cars.js if that is the wrong one. Candidates by area:',
+      ranked.map((r) => `${r.material.name || '(unnamed)'}: ${r.area.toFixed(2)}`)
+    );
+  }
+
+  // 6. Bicolor split parameters, per car (see cars.js):
   //    BELT_RATIO: where the windows start (above goes to roof color).
   //    BELT_TILT:  belt plane slope (dY/dX); positive rises toward the rear.
   //    LID_RATIO:  floor for horizontal panels that go to roof color (hood, trunk).
   //    NORMAL_UP:  how flat a panel must be to count as a lid (0..1).
-  const BELT_RATIO = 0.62;
-  const BELT_TILT  = -0.05;
-  const LID_RATIO  = 0.62;
+  const BELT_RATIO = carSpec.belt;
+  const BELT_TILT  = carSpec.beltTilt;
+  const LID_RATIO  = carSpec.lid;
   const NORMAL_UP  = 0.85;
   const carHeight  = bbox.max.y - bbox.min.y;
   const beltCenter = bbox.min.y + BELT_RATIO * carHeight;
@@ -437,13 +786,67 @@ function onModelLoaded(gltf) {
   bodyMaterials.clear();
   roofMaterials.clear();
 
-  for (const mesh of candidates) {
-    const r = splitMeshBicolor(mesh, beltCenter, BELT_TILT, lidFloor, NORMAL_UP);
-    if (r) {
-      bodyMaterials.add(r.lowerMat);
-      roofMaterials.add(r.upperMat);
-    } else {
-      bodyMaterials.add(mesh.material);
+  if (carSpec.secondSlot) {
+    // This car spends its second colour on its own materials rather than on a
+    // roof cut out of the shell, so the body is left whole.
+    for (const mesh of candidates) bodyMaterials.add(mesh.material);
+    for (const m of allMaterials) {
+      if (carSpec.secondSlot.pattern.test(m.name || '')) roofMaterials.add(m);
+    }
+  } else {
+    for (const mesh of candidates) {
+      const r = splitMeshBicolor(mesh, beltCenter, BELT_TILT, lidFloor, NORMAL_UP);
+      if (r) {
+        bodyMaterials.add(r.lowerMat);
+        roofMaterials.add(r.upperMat);
+      } else {
+        bodyMaterials.add(mesh.material);
+      }
+    }
+  }
+
+  // 6b. Touch up the paint atlas, once per source texture: the split above
+  //     cloned the material, so several of them share one.
+  if (carSpec.paintTweaks) {
+    const done = new Map();
+    for (const m of [...bodyMaterials, ...roofMaterials]) {
+      if (!m.map) continue;
+      if (!done.has(m.map)) done.set(m.map, retintedTexture(m.map, carSpec.paintTweaks));
+      const tex = done.get(m.map);
+      if (tex) {
+        m.map = tex;
+        m.needsUpdate = true;
+      }
+    }
+  }
+
+  // 6c. Claim triangles out of a shared material for the second slot, and
+  //     strip their baked colour here: this band is the claim's own, and the
+  //     material they were cloned from has to stay exactly as it was.
+  const claim = carSpec.secondSlot && carSpec.secondSlot.claim;
+  if (claim) {
+    const taken = [];
+    root.traverse((obj) => {
+      if (!obj.isMesh || Array.isArray(obj.material)) return;
+      if (!claim.from.test(obj.material.name || '')) return;
+      const mat = splitMeshByHue(obj, claim.band);
+      if (mat) taken.push(mat);
+    });
+    for (const mat of taken) {
+      const tex = mat.map && retintedTexture(mat.map, [{ ...claim.band, to: 'neutral' }]);
+      if (tex) mat.map = tex;
+      mat.needsUpdate = true;
+      roofMaterials.add(mat);
+    }
+    if (!taken.length) console.warn(`[${carSpec.id}] the second slot claimed nothing`);
+  }
+
+  // 6d. Say what the second slot paints, when it isn't the roof.
+  if (carSpec.secondSlot && roofMaterials.size > 0) {
+    const label = roofTab && roofTab.querySelector('.slot-name');
+    if (label) {
+      label.dataset.i18n = carSpec.secondSlot.name;
+      if (i18n.applyTranslations) i18n.applyTranslations();
     }
   }
 
@@ -454,6 +857,7 @@ function onModelLoaded(gltf) {
   }
 
   car.add(root);
+  frameCar(bbox);
   modelLoaded = true;
   loadingOverlay?.remove();
 
@@ -536,11 +940,25 @@ const slots = {
   roof: { h:   0, s: 0.00, v: 0.96 },
 };
 
+// Each car opens on its own signature colour.
+const accentHsv = hexToHsv(carSpec.accent);
+if (accentHsv) [slots.body.h, slots.body.s, slots.body.v] = accentHsv;
+
+// ...and so does its second slot, when that isn't a roof: the cabin should
+// start out the colour it already is on the real car.
+const secondHsv = carSpec.secondSlot && hexToHsv(carSpec.secondSlot.accent || '');
+if (secondHsv) [slots.roof.h, slots.roof.s, slots.roof.v] = secondHsv;
+
 function slotHex(slot) { return hsvToHex(slot.h, slot.s, slot.v); }
 
 function syncMaterials() {
   const bodyHex = slotHex(slots.body);
-  const roofHex = mode === 'single' ? bodyHex : slotHex(slots.roof);
+  // Single-colour mode paints the roof along with the body, because that is
+  // what one colour means for a car. A cabin is not part of that: it keeps its
+  // own colour until the second slot is actually in use.
+  const roofHex = (mode === 'single' && !carSpec.secondSlot)
+    ? bodyHex
+    : slotHex(slots.roof);
   // No-op before the model loads, since both sets are empty.
   applyColorTo(bodyMaterials, bodyHex);
   applyColorTo(roofMaterials, roofHex);
@@ -662,7 +1080,7 @@ shotBtn.addEventListener('click', () => {
   const dataURL = canvas.toDataURL('image/png');
   const link = document.createElement('a');
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  link.download = `fiat500-${ts}.png`;
+  link.download = `${carSpec.id}-${ts}.png`;
   link.href = dataURL;
   document.body.appendChild(link);
   link.click();
@@ -705,7 +1123,7 @@ shotBtn.addEventListener('click', () => {
 // Back button
 
 document.getElementById('backBtn').addEventListener('click', () => {
-  window.location.href = 'index.html';
+  window.location.href = 'garage.html';
 });
 
 
@@ -1086,6 +1504,9 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  // Re-fit only while the view is still the one we chose: once the user has
+  // orbited or zoomed, a resize must not yank the camera back.
+  if (!userMovedCamera) applyFraming();
   fitBackground();
   // The frame follows the window aspect, so it has to be redrawn too.
   drawCropFrame();
@@ -1098,7 +1519,7 @@ let lastInteractionTime = -Infinity;
 let isInteracting = false;
 const IDLE_DELAY = 1500;
 
-controls.addEventListener('start', () => { isInteracting = true; });
+controls.addEventListener('start', () => { isInteracting = true; userMovedCamera = true; });
 controls.addEventListener('end',   () => { isInteracting = false; lastInteractionTime = performance.now(); });
 
 function animate() {
